@@ -1,144 +1,248 @@
-
-
-import pygame
 import sys
+import pygame
 from pygame.locals import *
-# Se till att du har importerat load_from_cache från rätt modul
-from historic_data import getEvents, load_from_cache
-import re
+from ai_engine import get_ai_facts
 
-# Initialisering av Pygame
+# ---------------------------
+# Pygame setup
+# ---------------------------
+
 pygame.init()
 pygame.mixer.init()
 
-# Ladda cachad data
-cached_events = load_from_cache()
-if cached_events is not None:
-    all_historic_events = cached_events
-else:
-    print("Ingen cachad data hittad. Vänligen kör skrapningsmodulen först.")
-    sys.exit()  # Avslutar om ingen data finns
-
-
-# Hämta skärmens dimensioner och sätt fönsterbredden till hälften av skärmens bredd
 display_info = pygame.display.Info()
 screen_width = int(display_info.current_w // 1.5)
-screen_height = 600  # Du kan behålla eller justera höjden efter behov
+screen_height = 600
 
 screen = pygame.display.set_mode((screen_width, screen_height))
-pygame.display.set_caption("Historiska Händelser")
+pygame.display.set_caption("Time Machine")
+
+# ---------------------------
+# Fonts and colors
+# ---------------------------
 
 base_font = pygame.font.Font(None, 32)
-user_text = ''
-input_rect = pygame.Rect(screen_width // 4, screen_height // 4 + 60, screen_width // 2, 32)
-color_active = pygame.Color('lightskyblue3')
-color_passive = pygame.Color('gray15')
-color = color_passive
-active = False
-
 label_font = pygame.font.Font(None, 40)
-label_text = label_font.render("Tidsmaskin", True, (255, 255, 255))
-label_rect = label_text.get_rect(center=(screen_width // 2, screen_height // 4))
+hint_font = pygame.font.Font(None, 24)
 
-prompt_text = base_font.render("Skriv in det årtal dit du vill resa:", True, (255, 255, 255))
-prompt_rect = prompt_text.get_rect(topleft=(input_rect.x, input_rect.y - 25))
+color_active = pygame.Color("lightskyblue3")
+color_passive = pygame.Color("gray15")
+text_color = (255, 255, 255)
+hint_color = (200, 200, 200)
+
+# ---------------------------
+# Input box and static labels
+# ---------------------------
+
+user_text = ""
+
+# Input box sits roughly in the upper-middle of the screen
+input_rect = pygame.Rect(
+    screen_width // 4,
+    screen_height // 4 + 60,
+    screen_width // 2,
+    32,
+)
+active = False
+input_color = color_passive
+
+# Main title at the top
+title_text = label_font.render("Time Machine", True, text_color)
+title_rect = title_text.get_rect(center=(screen_width // 2, screen_height // 6))
+
+# Prompt above the input box
+prompt_text = base_font.render(
+    "Type a year, person, book, film or event:",
+    True,
+    text_color,
+)
+prompt_rect = prompt_text.get_rect(topleft=(input_rect.x, input_rect.y - 30))
+
+# Hint under the input box
+hint_text = hint_font.render(
+    "Press Enter to search – Use UP / DOWN to scroll",
+    True,
+    hint_color,
+)
+hint_rect = hint_text.get_rect(midtop=(screen_width // 2, input_rect.bottom + 10))
+
+# Everything below this y-coordinate is reserved for the scrollable results
+results_area_top = hint_rect.bottom + 20
+
+# ---------------------------
+# Background and sound
+# ---------------------------
 
 background_image = pygame.image.load("bilder/timemachine.png").convert_alpha()
-background_image = pygame.transform.scale(background_image, (screen_width, screen_height))  # Skala om bilden
-background_image.set_alpha(int(255 * 0.3))  # Sätt opacity till 30%
+background_image = pygame.transform.scale(background_image, (screen_width, screen_height))
+background_image.set_alpha(int(255 * 0.3))
 
-events_to_display = []
-scroll_y = 0  # Initial scroll-position
-
-# Variabel för att lagra den sökta årsrubriken
-searched_year_label = None
-
-running = True
 time_travel_sound = pygame.mixer.Sound("ljud/time_travel.mp3")
 
-def load_historic_events():
-    prel = all_historic_events
-    return prel
+# ---------------------------
+# Result handling
+# ---------------------------
 
-all_historic_events = load_historic_events()
-
-# I din Pygame-fil, innan spelet startar
-cached_events = load_from_cache()
-if cached_events:
-    all_historic_events = cached_events
-else:
-    print("Ingen cachad data hittad. Vänligen kör skrapningsmodulen först.")
-
-def getEvents(year):
-    found_events = []
-    
-    for event_tuple in all_historic_events:
-        # Antag att event_tuple är en tupel i formen (år, händelse)
-        event_year, event_text = event_tuple  # Packa upp tupeln
-
-        # Nu när du har året som en sträng, behöver du inte söka med regex
-        if event_year == year:
-            # Om det matchar det sökta året, lägg till hela händelsen (eller bara texten, beroende på vad du vill visa)
-            found_events.append(event_text)
-           
-    if not found_events:
-        found_events.append("Ingen händelse registrerad för detta år.")
-
-    return found_events
+events_to_display: list[str] = []
+scroll_y = 0  # Offset for vertical scrolling inside the results area
+results_label_surf = None  # "Results for: <query>" label
 
 
+def render_text_wrapped(
+    text: str,
+    font: pygame.font.Font,
+    color,
+    x: int,
+    y: int,
+    max_width: int,
+    surface: pygame.Surface,
+) -> int:
+    """
+    Render a long string as multiple lines so that it fits within max_width.
+    Returns the new y-position after the last line has been drawn.
+    """
+    words = text.split(" ")
+    line = ""
+    line_height = font.get_linesize()
+
+    for word in words:
+        test_line = line + word + " "
+        if font.size(test_line)[0] <= max_width:
+            line = test_line
+        else:
+            surface.blit(font.render(line, True, color), (x, y))
+            y += line_height
+            line = word + " "
+
+    if line:
+        surface.blit(font.render(line, True, color), (x, y))
+        y += line_height
+
+    return y
+
+
+# ---------------------------
+# Main event loop
+# ---------------------------
+
+running = True
 while running:
     for event in pygame.event.get():
         if event.type == QUIT:
             running = False
+
         elif event.type == MOUSEBUTTONDOWN:
+            # Toggle active state for the input box
             if input_rect.collidepoint(event.pos):
                 active = not active
             else:
                 active = False
-            color = color_active if active else color_passive
+            input_color = color_active if active else color_passive
+
         elif event.type == KEYDOWN:
             if active:
                 if event.key == K_RETURN:
-                    year = int(user_text) if user_text.isdigit() else None
-                    if year:
-                        events_to_display = getEvents(str(year))
-                        events_to_display = ["Ingen händelse registrerad för detta år." if event.strip() == "·" else event for event in events_to_display]
-                        # Om vi har träffar som inte bara är "Ingen händelse registrerad..."
-                        if not all(event == "Ingen händelse registrerad för detta år." for event in events_to_display):
-                            time_travel_sound.play()  # Spela upp ljudeffekten
-                        events_to_display = [text.split('\n') for text in events_to_display]
-                        events_to_display = [line for sublist in events_to_display for line in sublist]
-                        searched_year_label = base_font.render(f"Händelser för år {user_text}", True, (255, 255, 255))
-                        user_text = ''  # Återställ text efter sökning
+                    query = user_text.strip()
+                    if query:
+                        try:
+                            # Ask the AI for historical bullet points
+                            events_to_display = get_ai_facts(query)
+
+                            # Play the time travel sound if we actually got something back
+                            if events_to_display:
+                                time_travel_sound.play()
+
+                            results_label_surf = base_font.render(
+                                f"Results for: {query}",
+                                True,
+                                text_color,
+                            )
+                            # Reset scroll whenever a new search is performed
+                            scroll_y = 0
+
+                        except Exception as e:
+                            events_to_display = [
+                                "Something went wrong when contacting The Archivist.",
+                                f"Technical info: {e}",
+                            ]
+                            results_label_surf = base_font.render(
+                                "Error",
+                                True,
+                                (255, 100, 100),
+                            )
+                            scroll_y = 0
+
+                        # Clear the input field after the search
+                        user_text = ""
+
                 elif event.key == K_BACKSPACE:
                     user_text = user_text[:-1]
                 else:
                     user_text += event.unicode
-            if event.key == pygame.K_UP:  # Scrolla upp
+
+            # Arrow keys scroll the results area
+            if event.key == K_UP:
+                # Prevent scrolling past the initial top position
                 scroll_y = min(scroll_y + 20, 0)
-            elif event.key == pygame.K_DOWN:  # Scrolla ner
+            elif event.key == K_DOWN:
+                # Scroll down; no strict bottom limit for now
                 scroll_y -= 20
+
+    # -----------------------
+    # Drawing
+    # -----------------------
 
     screen.fill((0, 0, 0))
     screen.blit(background_image, (0, 0))
 
-    txt_surface = base_font.render(user_text, True, color)
+    # Title
+    screen.blit(title_text, title_rect)
+
+    # Results label just under the title, if available
+    if results_label_surf is not None:
+        results_rect = results_label_surf.get_rect(
+            center=(screen_width // 2, title_rect.bottom + 20)
+        )
+        screen.blit(results_label_surf, results_rect)
+
+    # Prompt and input box
     screen.blit(prompt_text, prompt_rect)
-    screen.blit(txt_surface, (input_rect.x + 5, input_rect.y + 5))
-    pygame.draw.rect(screen, color, input_rect, 2)
 
-    screen.blit(label_text, label_rect)
+    input_text_surface = base_font.render(user_text, True, text_color)
+    screen.blit(input_text_surface, (input_rect.x + 5, input_rect.y + 5))
+    pygame.draw.rect(screen, input_color, input_rect, 2)
 
-    # Rita ut rubriktexten för det sökta året om den finns
-    if searched_year_label:
-        year_label_rect = searched_year_label.get_rect(center=(screen_width // 2, input_rect.y - 100))
-        screen.blit(searched_year_label, year_label_rect)
+    # Hint text under the input box
+    screen.blit(hint_text, hint_rect)
 
-    for i, event_text in enumerate(events_to_display):
-        event_surface = base_font.render(event_text, True, (255, 255, 255))
-        screen.blit(event_surface, (50, (screen_height // 2 + i * 30) + scroll_y))
+    # -----------------------
+    # Scrollable results area
+    # -----------------------
+
+    # Create a separate transparent surface for the scrollable content.
+    # Anything drawn above y=0 in this surface is visible; anything below is clipped.
+    results_height = screen_height - results_area_top
+    results_surface = pygame.Surface((screen_width, results_height), pygame.SRCALPHA)
+
+    max_width = screen_width - 100
+    y = scroll_y  # Start drawing at the current scroll offset
+
+    for event_text in events_to_display:
+        y = render_text_wrapped(
+            event_text,
+            base_font,
+            text_color,
+            50,
+            y,
+            max_width,
+            results_surface,
+        )
+        y += 10  # Extra spacing between bullet points
+
+    # Blit the scrollable surface at the defined top region
+    screen.blit(results_surface, (0, results_area_top))
 
     pygame.display.flip()
 
 pygame.quit()
+sys.exit()
